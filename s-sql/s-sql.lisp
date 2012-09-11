@@ -511,6 +511,15 @@ with a given arity."
             :append `(" WHEN " ,@(sql-expand test) " THEN " ,@(sql-expand expr)))
     " END"))
 
+(def-sql-op :values (&rest values)
+  `("(VALUES "
+    ,@(loop :for value :in values
+            :for first = t :then nil
+            :unless first
+              :append `(", ")
+            :append `("(" ,@(sql-expand value) ")"))
+    ")"))
+
 (def-sql-op :[] (form start &optional end)
   (if end
       `("(" ,@(sql-expand form) ")[" ,@(sql-expand start) ":" ,@(sql-expand end) "]")
