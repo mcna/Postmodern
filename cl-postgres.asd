@@ -26,8 +26,8 @@
                          (:file "interpret" :depends-on ("communicate" "ieee-floats"))
                          (:file "protocol" :depends-on ("interpret" "messages" "errors"))
                          (:file "public" :depends-on ("protocol"))
-                         #+allegro
-			 (:file "bulk-copy" :depends-on ("public"))))))
+                         #+(or allegro swank)
+                         (:file "bulk-copy" :depends-on ("public"))))))
 
 (defsystem :cl-postgres-tests
   :depends-on (:cl-postgres :eos :simple-date)

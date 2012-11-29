@@ -14,12 +14,10 @@ Example usage would be as follows...
  (loop with c = (open-copier ...)
     for row = (get-row-from-input-data) then (get-row-from-input-data)
     until (null row)
-    do (copy-row row)
-    finally (handler-case
+    do (copy-row c row)
+    finally (unwind-protect
                (copy-done c)
-               (close-database c)
-             (t ()
-               (close-database c))))
+              (close-database c)))
 
 It's probably a good idea to turn off triggers when loading a lot of data.  This can
 be done temporarily using the macro without-auto-triggers
@@ -50,7 +48,13 @@ be done temporarily using the macro without-auto-triggers
 	    (copier-columns self))))
 
 
+;;;
+(defun make-temp-file-name ()
+  (block nil
+    #+allegro (return (system:make-temp-file-name))
+    #+swank (return (swank-backend::temp-file-name))))
 
+;;;
 (defun csv-copier-p (self)
   (copier-stream self))
 
@@ -76,7 +80,7 @@ the specified copy statement)"
                              (open (format nil "~a.csv" use-temporary-file) :direction :output
                                :if-does-not-exist :create))
                             (otherwise
-                             (open (format nil "~a.csv" (system:make-temp-file-name)) :direction :output
+                             (open (format nil "~a.csv" (make-temp-file-name)) :direction :output
                                :if-does-not-exist :create)))
                   :from/to (intern (symbol-name from/to) :cl-postgres)
                   :header-p header-p
