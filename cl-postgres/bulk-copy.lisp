@@ -102,7 +102,7 @@ the specified copy statement)"
                ((char= char #\') (princ "''"))
                ((char= char #\\) (princ "\\\\"))
                ((or (char< char #\Space)
-                    (char> char #\u007e))
+                    (char> char #\~))
                 (princ-octal char *standard-output*))
                (t (princ char))))
       (princ #\'))))
@@ -274,8 +274,8 @@ not printable ASCII, using UTF-8 for high values."
        (princ #\\ s)
        (write (logior #b10000000 (logand #b00111111 code)) :base 8 :stream s)
        
-     done
-     code)))
+     done)
+    code))
 (declaim (inline princ-octal))
 
 (defun copier-write-value-text (s val copier-quote-str copier-escape-str)
