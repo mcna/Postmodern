@@ -11,15 +11,10 @@ copy-done
 
 Example usage would be as follows...
 
-(loop with c = (open-copier ...)
-   for row = (get-row-from-input-data) then (get-row-from-input-data)
-   until (null row)
-   do (copy-row row)
-   finally (handler-case
-               (copy-done c)
-             (close-database c)
-             (t ()
-               (close-database c))))
+ (loop with c = (open-copier …)
+    while (get-row-from-input-data)
+    do (copy-row c it)
+    finally (copy-done c))
 
 It's probably a good idea to turn off triggers when loading a lot of data.  This can
 be done temporarily using the macro without-auto-triggers
@@ -27,7 +22,7 @@ be done temporarily using the macro without-auto-triggers
 
 (defvar *bulk-copier*)
 
-(eval-when (#+sbcl :compile-toplevel $+allegro compile $+allegro load $+allegro eval)
+(eval-when (#+sbcl :compile-toplevel #+allegro compile #+allegro load #+allegro eval)
   (export '(*bulk-copier* copier-database copier-table)))
 
 (defclass bulk-copier ()
