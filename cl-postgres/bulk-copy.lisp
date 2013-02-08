@@ -27,7 +27,7 @@ be done temporarily using the macro without-auto-triggers
 
 (defvar *bulk-copier*)
 
-(eval-when (#+sbcl :compile-toplevel #+acl compile #+acl load #+acl eval)
+(eval-when (#+sbcl :compile-toplevel $+allegro compile $+allegro load $+allegro eval)
   (export '(*bulk-copier* copier-database copier-table)))
 
 (defclass bulk-copier ()
