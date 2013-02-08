@@ -93,15 +93,17 @@ the specified copy statement)"
 
 (defun sql-escape-string (string)
   "Escape string data so it can be used in a query."
+  (declare (optimize speed) (type string string))
   (let ((*print-pretty* nil))
     (with-output-to-string (*standard-output*)
       (princ #\')
-      (loop :for char :across string
+      (loop :for char :across (the string string)
          :do (cond
                ((char= char #\') (princ "''"))
                ((char= char #\\) (princ "\\\\"))
                ((or (char< char #\Space)
-                    (char> char #\u007e)) (princ-octal char t))
+                    (char> char #\u007e))
+                (princ-octal char *standard-output*))
                (t (princ char))))
       (princ #\'))))
 
@@ -210,55 +212,72 @@ copy ~a ~@[(~{~a~^,~})~] ~a ~a
         (write-char copier-quote-str s))
       (when (and val (not (eq :null val)))
         (princ val s))))
-
+
 (defun princ-octal (ch s)
   "Write an octal escape sequence of the form \nnn if the character is
 not printable ASCII, using UTF-8 for high values."
   (declare (type character ch) (optimize speed))
   (let ((code (char-code ch)))
-   (block encoder
-     (tagbody
-        (cond ((< code #x20) ; ASCII-range control codes (except DEL)
-               (princ #\\ s)
-               (write code :base 8 :stream s)
-               (go end))
-              ((< code #x7f) ; printable ASCII
-               (princ ch s)
-               (go end))
-              ((= code #x80) ; DEL
-               (princ "\177")
-               (go end))
-              ((< code #x800) ; UTF-8 two-byte sequences
-               (princ #\\ s)
-               (write (logior #b11000000 (ash code -6)) :base 8 :stream s)
-               (go one-more))
-              ((< code #xd800) ; UTF-8 three-byte sequences
-               (princ #\\ s)
-               (write (logior #b11100000 (ash code -12)) :base 8 :stream s)
-               (go two-more))
-              ((< code #xe000) ; #xd800-#xdfff are invalid in Unicode
-               (princ "\\403\\277\\275" s) ; U+FFFD = substitute for invalid char
-               (go end))
-              ((< code #xfffe) ; UTF-8 three-byte sequences, continued
-               (princ #\\ s)
-               (write (logior #b11100000 (ash code -12)) :base 8 :stream s)
-               (go two-more))
-              ((or (= code #xfffe) (= code #xffff)) ; invalid characters
-               (princ "\\403\\277\\275" s) ; U+FFFD = substitute for invalid char
-               (go end))
-              ;; Not worth supporting … yet?
-              (t (warn "Can't represent high Unicode value for code: U+~X “~A”" code ch)
-               (princ "\\403\\277\\275~U+" s)
-               (write code :base 16 :stream s)
-               (go end)))
-        ;(princ (logior* #b10000000 (logand #b00111111 (ash code -12))) s)
-      two-more
-        (princ (logior #b10000000 (logand #b00111111 (ash code -6))) s)
-      one-more
-        (princ (logior #b10000000 (logand #b00111111 code)) s)
-      end))))
+    (tagbody
+       (cond ((< code #x20) ; ASCII-range control codes (except DEL)
+              (princ #\\ s)
+              (write code :base 8 :stream s)
+              (go done))
+             
+             ((< code #x7f) ; printable ASCII
+              (princ ch s)
+              (go done))
+             
+             ((= code #x80) ; DEL
+              (princ "\177")
+              (go done))
+             
+             ((< code #x800) ; UTF-8 two-byte sequences
+              (princ #\\ s)
+              (write (logior #b11000000 (ash code -6)) :base 8 :stream s)
+              (go one-more))
+             
+             ((< code #xd800) ; UTF-8 three-byte sequences
+              (princ #\\ s)
+              (write (logior #b11100000 (ash code -12)) :base 8 :stream s)
+              (go two-more))
+             
+             ((< code #xe000) ; #xd800-#xdfff are invalid in Unicode
+              (warn "Replaced invalid (non-Unicode) character with U+FFFD")
+              (princ "\\403\\277\\275" s) ; U+FFFD = substitute for invalid char
+              (go done))
+             
+             ((< code #xfffe) ; UTF-8 three-byte sequences, continued
+              (princ #\\ s)
+              (write (logior #b11100000 (ash code -12)) :base 8 :stream s)
+              (go two-more))
+             
+             ((or (= code #xfffe) (= code #xffff)) ; invalid characters
+              (warn "Replaced invalid (non-Unicode) character with U+FFFD")
+              (princ "\\403\\277\\275" s) ; U+FFFD = substitute for invalid char
+              (go done))
+             
+             ;; Not worth supporting … yet? But alert the user, if it
+             ;; does happen, so we know it's time to fix this.
+             (t (cerror
+                 "Ignore, replacing with substitution sequence U+FFFD plus code"
+                 "Can't represent high Unicode value for code: U+~X “~A”" code ch)
+                (princ "\\403\\277\\275~U+" s)
+                (write code :base 16 :stream s)
+                (go done)))
+                                        ;(princ (logior* #b10000000 (logand #b00111111 (ash code -12))) s)
+     two-more
+       (princ #\\ s)
+       (write (logior #b10000000 (logand #b00111111 (ash code -6))) :base 8 :stream s)
+       
+     one-more
+       (princ #\\ s)
+       (write (logior #b10000000 (logand #b00111111 code)) :base 8 :stream s)
+       
+     done
+     code)))
 (declaim (inline princ-octal))
-
+
 (defun copier-write-value-text (s val copier-quote-str copier-escape-str)
   (declare (ignore copier-quote-str copier-escape-str))
   (typecase val
@@ -269,8 +288,7 @@ not printable ASCII, using UTF-8 for high values."
                    ((char= char #\\) (princ "\\" s))
                    ((char= char (copier-delimiter *current-copier*))
                     (princ "\\" s) (princ char s))
-                   ;; note, ~ = #x7e = last printable ASCII char.
-                   ;; #x7f = DELETE
+                   ;; note, #\~ = #x7e = last printable ASCII char.
                    ((char< #\Space char #\~) (princ char s))
                    (t (princ-octal char s)))))
     (number (princ val s))
