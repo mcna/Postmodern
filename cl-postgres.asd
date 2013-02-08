@@ -12,7 +12,8 @@
 (defsystem :cl-postgres
   :description "Low-level client library for PosgreSQL"
   :depends-on (:md5 #-(or allegro sbcl) :usocket
-                    #+sbcl :sb-bsd-sockets)
+                    #+sbcl :sb-bsd-sockets
+                    #+sbcl :temporary-file)
   :components 
   ((:module :cl-postgres
             :components ((:file "trivial-utf-8")
@@ -26,7 +27,7 @@
                          (:file "interpret" :depends-on ("communicate" "ieee-floats"))
                          (:file "protocol" :depends-on ("interpret" "messages" "errors"))
                          (:file "public" :depends-on ("protocol"))
-                         #+allegro
+                         #+(or sbcl allegro)
 			 (:file "bulk-copy" :depends-on ("public"))))))
 
 (defsystem :cl-postgres-tests
