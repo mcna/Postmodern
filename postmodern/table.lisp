@@ -163,7 +163,9 @@
   creation."))
 
 (defun %eval (code)
-  (funcall (compile nil `(lambda () ,code))))
+  (handler-bind
+      ((style-warning (lambda (w) (muffle-warning w))))
+    (funcall (compile nil `(lambda () ,code)))))
 
 (defun build-dao-methods (class)
   "Synthesise a number of methods for a newly defined DAO class.
