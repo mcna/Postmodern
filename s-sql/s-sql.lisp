@@ -675,7 +675,7 @@ to runtime. Used to create stored procedures."
      (loop :for row :in rows :for first := t :then nil
            :when (/= (length row) length)
            :do (sql-error "Found rows of unequal length in :insert-rows-into.")
-           :append `(,@(unless first '(", ")) "(" ,@(sql-expand-list row) ")")))))
+           :append `(,@(unless first '(#.(format nil ",~C" #\Newline))) "(" ,@(sql-expand-list row) ")")))))
 
 (def-sql-op :insert-rows-into (table &rest rest)
   (split-on-keywords ((columns ? *) (values) (returning ? *)) rest
