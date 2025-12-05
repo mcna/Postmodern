@@ -1,16 +1,9 @@
+;;;; -*- Mode: LISP; Syntax: Ansi-Common-Lisp; Base: 10; Package: CL-POSTGRES-TRIVIAL-UTF-8; -*-
+
 ;;; Minimal utf-8 decoding and encoding library.
 ;;;
-;;; See http://common-lisp.net/project/trivial-utf-8/
-
-(defpackage :cl-postgres-trivial-utf-8
-  (:use :common-lisp)
-  (:export #:utf-8-byte-length
-           #:string-to-utf-8-bytes
-           #:write-utf-8-bytes
-           #:utf-8-group-size
-           #:utf-8-bytes-to-string
-           #:read-utf-8-string
-           #:utf-8-decoding-error))
+;;; See http://common-lisp.net/project/trivial-utf-8/ (no longer maintained?)
+;;; This file is being kept in case we need to make patches or additions
 
 (in-package :cl-postgres-trivial-utf-8)
 
@@ -61,12 +54,13 @@ encoded form of that character."
 
 (defun string-to-utf-8-bytes (string &key null-terminate)
   "Convert a string into an array of unsigned bytes containing its
-utf-8 representation."
+utf-8 representation. If NULL-TERMINATE, add an extra 0 byte at the end."
   (declare (type string string)
            #.*optimize*)
   (let ((buffer (make-array (+ (the fixnum (utf-8-byte-length string))
                                (if null-terminate 1 0))
-                            :element-type '(unsigned-byte 8)))
+                            :element-type '(unsigned-byte 8)
+                            :initial-element 0))
         (position 0)
         (string (coerce string 'simple-string)))
     (declare (type (array (unsigned-byte 8)) buffer)
@@ -111,7 +105,7 @@ starting with a given byte."
         ((= (logand byte #b11110000) #b11100000) 3)
         ((= (logand byte #b11111000) #b11110000) 4)
         (t (error 'utf-8-decoding-error :byte byte
-                  :message "Invalid byte at start of character: 0x~X"))))
+                  :message "UTF-8-group-size Invalid byte at start of character: 0x~X"))))
 
 (defun utf-8-string-length (bytes &key (start 0) (end (length bytes)))
   "Calculate the length of the string encoded by the given bytes."
@@ -138,7 +132,8 @@ extract the character starting at the given start position."
            (six-bits (byte)
              (unless (= (logand byte #b11000000) #b10000000)
                (error 'utf-8-decoding-error :byte byte
-                      :message "Invalid byte 0x~X inside a character."))
+                      :message
+                      "Get-utf-8-character Invalid byte 0x~X inside a character."))
              (ldb (byte 6 0) byte)))
     (case group-size
       (1 (next-byte))
@@ -154,7 +149,7 @@ extract the character starting at the given start position."
 
 (defun utf-8-bytes-to-string (bytes-in &key (start 0) (end (length bytes-in)))
   "Convert a byte array containing utf-8 encoded characters into
-the string it encodes." 
+the string it encodes."
   (declare (type vector bytes-in)
            (type fixnum start end)
            #.*optimize*)
@@ -163,16 +158,18 @@ the string it encodes."
         :with array-position :of-type fixnum = start
         :with string-position :of-type fixnum = 0
         :while (< array-position end)
-        :do (let* ((char (elt bytes array-position))
-                   (current-group (utf-8-group-size char)))
-              (when (> (+ current-group array-position) end)
-                (error 'utf-8-decoding-error
-                       :message "Unfinished character at end of byte array."))
-              (setf (char buffer string-position)
-                 (code-char (get-utf-8-character bytes current-group
-                                                 array-position)))
-              (incf string-position 1)
-              (incf array-position current-group))
+        :do
+           (let* ((char (elt bytes array-position))
+                  (current-group (utf-8-group-size char)))
+             (when (> (+ current-group array-position) end)
+               (error 'utf-8-decoding-error
+                      :message
+                      "utf-8-bytes-to-string. Unfinished character at end of byte array."))
+             (setf (char buffer string-position)
+                   (code-char (get-utf-8-character bytes current-group
+                                                   array-position)))
+             (incf string-position 1)
+             (incf array-position current-group))
         :finally (return buffer)))
 
 (defun read-utf-8-string (input &key null-terminated stop-at-eof
@@ -186,7 +183,9 @@ max amount of characters or bytes to read."
   (declare (type stream input)
            (type fixnum byte-length char-length)
            #.*optimize*)
-  (let ((buffer (make-array 4 :element-type '(unsigned-byte 8)))
+  (let ((buffer (make-array 4
+                            :element-type '(unsigned-byte 8)
+                            :initial-element 0))
         (bytes-read 0)
         (string (make-array 64 :element-type 'character
                             :adjustable t :fill-pointer 0)))
@@ -209,7 +208,7 @@ max amount of characters or bytes to read."
 		     :for next-char = (read-byte input nil :eof)
 		     :do (when (eq next-char :eof)
 			   (error 'utf-8-decoding-error
-				  :message "Unfinished character at end of input."))
+				  :message "read-utf-8-string. Unfinished character at end of input."))
 		     :do (setf (elt buffer i) next-char))
 		  (vector-push-extend (code-char (get-utf-8-character
 						  buffer current-group))
