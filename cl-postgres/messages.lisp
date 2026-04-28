@@ -1,3 +1,4 @@
+;;;; -*- Mode: LISP; Syntax: Ansi-Common-Lisp; Base: 10; Package: CL-POSTGRES; -*-
 (in-package :cl-postgres)
 
 ;; For more information about the PostgreSQL scocket protocol, see
@@ -19,7 +20,8 @@ message definitions themselves stay readable."
                       (ecase (first part)
                         (uint
                          (incf base-length (second part))
-                         `(,(integer-writer-name (second part) nil) ,socket ,(third part)))
+                         `(,(integer-writer-name (second part) nil) ,socket
+                           ,(third part)))
                         (string
                          (push `(,name ,(second part)) strings)
                          (incf base-length 1) ;; The null terminator
@@ -35,16 +37,16 @@ message definitions themselves stay readable."
     (when id
       (push `(write-uint1 ,socket ,(char-code id)) writers))
     `(defun ,name ,(cons socket arglist)
-      (declare (type stream ,socket)
-               #.*optimize*)
-      (let ,strings ,@writers))))
+       (declare (type stream ,socket)
+                #.*optimize*)
+       (let ,strings ,@writers))))
 
 ;; Try to enable SSL for a connection.
 (define-message ssl-request-message nil ()
   (uint 4 80877103))
 
 ;; Sends the initial message and sets a few parameters.
-(define-message startup-message nil (user database)
+(define-message startup-message nil (user database application-name)
   (uint 4 196608) ;; Identifies protocol 3.0
   (string "user")
   (string user)
@@ -52,6 +54,8 @@ message definitions themselves stay readable."
   (string database)
   (string "client_encoding")
   (string *client-encoding*)
+  (string "application_name")
+  (string application-name)
   (uint 1 0)) ;; Terminates the parameter list
 
 ;; Identify a user with a plain-text password.
@@ -66,9 +70,9 @@ message definitions themselves stay readable."
   (let ((digits #.(coerce "0123456789abcdef" 'simple-base-string))
         (result (make-string (* (length bytes) 2) :element-type 'base-char)))
     (loop :for byte :across bytes
-	  :for pos :from 0 :by 2
-	  :do (setf (char result pos) (aref digits (ldb (byte 4 4) byte))
-		    (char result (1+ pos)) (aref digits (ldb (byte 4 0) byte))))
+          :for pos :from 0 :by 2
+          :do (setf (char result pos) (aref digits (ldb (byte 4 4) byte))
+                    (char result (1+ pos)) (aref digits (ldb (byte 4 0) byte))))
     result))
 
 (defun md5-password (password user salt)
@@ -78,13 +82,28 @@ message definitions themselves stay readable."
            #.*optimize*)
   (flet ((md5-and-hex (sequence)
            (bytes-to-hex-string (md5:md5sum-sequence sequence))))
-    (let* ((pass1 (md5-and-hex (enc-string-bytes (concatenate 'string password user))))
-           (pass2 (md5-and-hex (concatenate '(vector (unsigned-byte 8) *) (enc-string-bytes pass1) salt))))
+    (let* ((pass1 (md5-and-hex (enc-string-bytes (concatenate 'string password
+                                                              user))))
+           (pass2 (md5-and-hex (concatenate '(vector (unsigned-byte 8) *)
+                                            (enc-string-bytes pass1) salt))))
       (concatenate 'string "md5" pass2))))
 
 ;; Identify a user with an MD5-hashed password.
 (define-message md5-password-message #\p (password user salt)
   (string (md5-password password user salt)))
+
+(define-message gss-auth-buffer-message #\p (buf)
+  (bytes buf))
+
+;; Scram messages
+(define-message scram-type-message #\p (client-initial-message)
+  (string "SCRAM-SHA-256") ; we are skipping scram-sha-256-plus at the moment
+  (uint 4 (enc-byte-length client-initial-message))
+  (bytes (cl-postgres-trivial-utf-8:string-to-utf-8-bytes
+          client-initial-message)))
+
+(define-message scram-cont-message #\p (final-message)
+  (bytes (cl-postgres-trivial-utf-8:string-to-utf-8-bytes final-message)))
 
 ;; Send a query, the simple way.
 (define-message query-message #\Q (query)
@@ -97,10 +116,37 @@ message definitions themselves stay readable."
   (uint 2 0)) ;; Parameter types
 
 ;; Parse a query, giving it a name.
+;; https://www.postgresql.org/docs/current/protocol-message-formats.html
+;; handles parameters which are integers, single or double floats or booleans
 (define-message parse-message #\P (name query)
   (string name)
   (string query)
   (uint 2 0))
+
+
+
+(defun parse-message-binary-parameters (s name query parameters)
+  "Like parse-message but specifically when binary parameters are parsed."
+  (declare (type stream s)
+           (optimize (speed 3) (space 1) (debug 1)
+                     (compilation-speed 0)))
+  (let ((len (length parameters)))
+    (write-uint1 s 80)
+    (write-uint4 s
+                 (+ 8 (* len 4) (enc-byte-length query) (enc-byte-length name)))
+    (write-str s name)
+    (write-str s query)
+    (if parameters
+        (progn
+          (write-uint2 s len)
+          (loop for x in parameters do
+            (write-uint4 s (param-to-oid x))))
+        (write-uint2 s 0))))
+
+;; Close a named parsed query, freeing the name.
+(define-message close-prepared-message #\C (name)
+  (uint 1 #.(char-code #\S)) ;; Prepared statement
+  (string name))
 
 (defun formats-to-bytes (formats)
   "Formats have to be passed as arrays of 2-byte integers, with 1
@@ -125,9 +171,27 @@ indicating binary and 0 indicating plain text."
   (uint 2 (length formats)) ;; Number of result format specifications
   (bytes (formats-to-bytes formats))) ;; Result format
 
+(defun go-binary-list-p (parameters binary-parameters-p)
+  "Function used by bind-message to decide whether to send
+parameters in binary."
+  (when (and binary-parameters-p parameters)
+    (let ((len (length parameters)))
+      (and (< len 11)
+           (notany #'(lambda (x)
+                    (or (eq 0 (param-to-oid x))
+                        (eq 25 (param-to-oid x))))
+                   parameters)))))
+
+(defun go-binary-p (parameter binary-parameters-p)
+  "Potential use for a single parameter to decide whether to send it in binary."
+  (when (and binary-parameters-p parameter)
+    (not (or (eq 0 (param-to-oid parameter))
+         (eq 25 (param-to-oid parameter))))))
+
 ;; This one was a bit too complex to put into define-message format,
 ;; so it does everything by hand.
-(defun bind-message (socket name result-formats parameters)
+
+(defun bind-message (socket name result-formats parameters binary-parameters-p)
   "Bind a prepared statement, ask for the given formats, and pass the
 given parameters, that can be either string or byte vector.
 \(vector \(unsigned-byte 8)) parameters will be sent as binary data, useful
@@ -138,47 +202,61 @@ for binding data for binary long object columns."
            (type list parameters)
            #.*optimize*)
   (let* ((n-params (length parameters))
-         (param-formats (make-array n-params :element-type 'fixnum))
-         (param-sizes (make-array n-params :element-type 'fixnum))
+         (param-formats (make-array n-params
+                                    :element-type 'fixnum
+                                    :initial-element 0))
+         (param-sizes (make-array n-params
+                                  :element-type 'fixnum
+                                  :initial-element 0))
          (param-values (make-array n-params))
-         (n-result-formats (length result-formats)))
+         (n-result-formats (length result-formats))
+         (go-binary (go-binary-list-p parameters binary-parameters-p)))
     (declare (type (unsigned-byte 16) n-params n-result-formats))
     (loop :for param :in parameters
           :for i :from 0
-          :do (flet ((set-param (format size value)
-                       (setf (aref param-formats i) format
-                             (aref param-sizes i) size
-                             (aref param-values i) value)))
-                (cond ((eq param :null)
-                       (set-param 0 0 nil))
-                      ((typep param '(vector (unsigned-byte 8)))
-                       (set-param 1 (length param) param))
-                      (t
-                       (unless (typep param 'string)
-                         (setf param (to-sql-string param)))
-                       (set-param 0 (enc-byte-length param) param)))))
-    (write-uint1 socket #.(char-code #\B))
+          :do
+             (flet ((set-param (format size value)
+                      (setf (aref param-formats i) format
+                            (aref param-sizes i) size
+                            (aref param-values i) value)))
+               (declare (inline set-param))
+               (cond ((eq param :null)
+                      (set-param 0 0 nil))
+                     ((typep param '(vector (unsigned-byte 8))) ;param already in binary form
+                      (set-param 1 (length param) param))
+                     (t
+                      (unless (typep param 'string)
+                        (if go-binary
+                            (setf param (serialize-for-postgres param))
+                            (setf param (to-sql-string param))))
+                      (etypecase param
+                        (string
+                         (set-param 0 (enc-byte-length param) param))
+                        ((vector (unsigned-byte 8))
+                         (set-param 1 (length param) param)))))))
+    (write-uint1 socket #.(char-code #\B)) ; identifies message as bind command
     (write-uint4 socket (+ 12
                            (enc-byte-length name)
                            (* 6 n-params)   ;; Input formats and sizes
                            (* 2 n-result-formats)
                            (loop :for size :of-type fixnum :across param-sizes
                                  :sum size)))
+
     (write-uint1 socket 0)                  ;; Name of the portal
     (write-str socket name)                 ;; Name of the prepared statement
-    (write-uint2 socket n-params)           ;; Number of parameter format specs
-    (loop :for format :across param-formats ;; Param formats (text/binary)
-          :do (write-uint2 socket format))
-    (write-uint2 socket n-params)           ;; Number of parameter specifications
+    (write-uint2 socket n-params)           ;; Number of parameters
+    (loop :for format :across param-formats ;; Param formats (text/binary) must be 0 or 1
+          :do (write-uint2 socket (if (or go-binary (= 1 format)) 1 0)))
+    (write-uint2 socket n-params)           ;; Number of parameter values
     (loop :for param :across param-values
           :for size :across param-sizes
-          :do (write-int4 socket (if param size -1))
+          :do (write-int4 socket (if param size -1)) ;; length of parameter values
           :do (when param
                 (if (typep param '(vector (unsigned-byte 8)))
-                    (write-sequence param socket)
-                    (enc-write-string param socket))))
+                    (write-sequence param socket) ;; value of the parameter if binary
+                    (enc-write-string param socket)))) ;; value of the parameter if text
     (write-uint2 socket n-result-formats)   ;; Number of result formats
-    (loop :for format :across result-formats ;; Result formats (text/binary)
+    (loop :for format :across result-formats ;; Result formats (text/binary) must be 0 or 1
           :do (write-uint2 socket (if format 1 0)))))
 
 ;; Describe the anonymous portal, so we can find out what kind of

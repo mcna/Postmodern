@@ -1,3 +1,4 @@
+;;;; -*- Mode: LISP; Syntax: Ansi-Common-Lisp; Base: 10; Package: CL-POSTGRES; -*-
 (in-package :cl-postgres)
 
 ;; These are used to synthesize reader and writer names for integer
@@ -7,10 +8,12 @@
 (eval-when (:compile-toplevel :load-toplevel :execute)
   (defun integer-reader-name (bytes signed)
     (intern (with-standard-io-syntax
-              (format nil "~a~a~a~a" '#:read- (if signed "" '#:u) '#:int bytes))))
+              (format nil "~a~a~a~a" '#:read- (if signed "" '#:u)
+                      '#:int bytes))))
   (defun integer-writer-name (bytes signed)
     (intern (with-standard-io-syntax
-              (format nil "~a~a~a~a" '#:write- (if signed "" '#:u) '#:int bytes)))))
+              (format nil "~a~a~a~a" '#:write- (if signed "" '#:u)
+                      '#:int bytes)))))
 
 (defmacro integer-reader (bytes)
   "Create a function to read integers from a binary stream."
@@ -32,13 +35,15 @@
                        `(let ((result 0))
                           (declare (type (unsigned-byte ,bits) result))
                           ,@(loop :for byte :from (1- bytes) :downto 0
-                                   :collect `(setf (ldb (byte 8 ,(* 8 byte)) result)
-                                                   (the (unsigned-byte 8) (read-byte socket))))
+                                  :collect `(setf (ldb (byte 8 ,(* 8 byte))
+                                                       result)
+                                                  (the (unsigned-byte 8)
+                                                       (read-byte socket))))
                           ,(return-form signed))))))
       `(progn
-;; This causes weird errors on SBCL in some circumstances. Disabled for now.
-;;         (declaim (inline ,(integer-reader-name bytes t)
-;;                          ,(integer-reader-name bytes nil)))
+         ;; This causes weird errors on SBCL in some circumstances. Disabled for now.
+         ;;         (declaim (inline ,(integer-reader-name bytes t)
+         ;;                          ,(integer-reader-name bytes nil)))
          (declaim (ftype (function (t) (signed-byte ,bits))
                          ,(integer-reader-name bytes t)))
          ,(generate-reader t)
@@ -50,28 +55,28 @@
   "Create a function to write integers to a binary stream."
   (let ((bits (* 8 bytes)))
     `(progn
-      (declaim (inline ,(integer-writer-name bytes t)
-                       ,(integer-writer-name bytes nil)))
-      (defun ,(integer-writer-name bytes nil) (socket value)
-        (declare (type stream socket)
-                 (type (unsigned-byte ,bits) value)
-                 #.*optimize*)
-        ,@(if (= bytes 1)
-              `((write-byte value socket))
-              (loop :for byte :from (1- bytes) :downto 0
-                    :collect `(write-byte (ldb (byte 8 ,(* byte 8)) value)
-                               socket)))
-        (values))
-      (defun ,(integer-writer-name bytes t) (socket value)
-        (declare (type stream socket)
-                 (type (signed-byte ,bits) value)
-                 #.*optimize*)
-        ,@(if (= bytes 1)
-              `((write-byte (ldb (byte 8 0) value) socket))
-              (loop :for byte :from (1- bytes) :downto 0
-                    :collect `(write-byte (ldb (byte 8 ,(* byte 8)) value)
-                               socket)))
-        (values)))))
+       (declaim (inline ,(integer-writer-name bytes t)
+                        ,(integer-writer-name bytes nil)))
+       (defun ,(integer-writer-name bytes nil) (socket value)
+         (declare (type stream socket)
+                  (type (unsigned-byte ,bits) value)
+                  #.*optimize*)
+         ,@(if (= bytes 1)
+               `((write-byte value socket))
+               (loop :for byte :from (1- bytes) :downto 0
+                     :collect `(write-byte (ldb (byte 8 ,(* byte 8)) value)
+                                           socket)))
+         (values))
+       (defun ,(integer-writer-name bytes t) (socket value)
+         (declare (type stream socket)
+                  (type (signed-byte ,bits) value)
+                  #.*optimize*)
+         ,@(if (= bytes 1)
+               `((write-byte (ldb (byte 8 0) value) socket))
+               (loop :for byte :from (1- bytes) :downto 0
+                     :collect `(write-byte (ldb (byte 8 ,(* byte 8)) value)
+                                           socket)))
+         (values)))))
 
 ;; All the instances of the above that we need.
 
@@ -83,6 +88,7 @@
 (integer-writer 1)
 (integer-writer 2)
 (integer-writer 4)
+(integer-writer 8)
 
 (defun write-bytes (socket bytes)
   "Write a byte-array to a stream."
@@ -108,7 +114,9 @@ support is enabled.)."
   (declare (type stream socket)
            (type fixnum length)
            #.*optimize*)
-  (let ((result (make-array length :element-type '(unsigned-byte 8))))
+  (let ((result (make-array length
+                            :element-type '(unsigned-byte 8)
+                            :initial-element 0)))
     (read-sequence result socket)
     result))
 
@@ -119,6 +127,16 @@ when UTF-8 support is enabled."
   (declare (type stream socket)
            #.*optimize*)
   (enc-read-string socket :null-terminated t))
+
+(declaim (ftype (function (t) string) read-simple-str))
+(defun read-simple-str (socket)
+  "Read a null-terminated string from a stream. Interprets it as ASCII."
+  (declare (type stream socket)
+           #.*optimize*)
+  (with-output-to-string (out)
+    (loop :for b := (read-byte socket nil 0) :do
+      (cond ((eq b 0) (return))
+            ((< b 128) (write-char (code-char b) out))))))
 
 (defun skip-bytes (socket length)
   "Skip a given number of bytes in a binary stream."
@@ -140,4 +158,5 @@ when UTF-8 support is enabled."
     (handler-case
         (close socket :abort abort)
       (error (error)
-        (warn "Ignoring the error which happened while trying to close PostgreSQL socket: ~A" error)))))
+        (warn "Ignoring the error which happened while trying to close
+ PostgreSQL socket: ~A" error)))))
